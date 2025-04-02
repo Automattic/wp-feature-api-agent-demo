@@ -1,4 +1,4 @@
-<?php
+ <?php
 // File: wp-react-agent/features/contact-form-7.php
 
 use Felix_Arntz\AI_Services\Services\API\Enums\AI_Capability;
