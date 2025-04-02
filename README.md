@@ -1,6 +1,9 @@
 # WP ReAct Agent
 
-A modular ReAct (Reasoning + Acting) Agent framework for WordPress, powered by Feature API and AI Services plugin.
+A modular [ReAct (Reasoning + Acting)](https://arxiv.org/abs/2210.03629) Agent framework for WordPress, powered by Feature API and AI Services plugin.
+
+> **Note:** This is a Proof of Concept implementation with several limitations. The current version does not maintain conversation history, user inputs during task execution, or multi-step interactions. These limitations will be addressed in future versions.
+
 
 ## Description
 
@@ -124,6 +127,9 @@ wpReactAgent.run("Update the posts_per_page option to 15");
 
 // Example with Navigation
 wpReactAgent.run("Take me to the Media Library");
+
+// Example creating a complex form
+wpReactAgent.run("Make me a new form, named after my site title, and related to it. It should have a ton of fields and send to the current user's email.");
 ```
 
 ## Developer Notes
