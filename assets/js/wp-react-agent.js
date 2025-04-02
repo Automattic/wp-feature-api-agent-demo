@@ -70,4 +70,4 @@ window.wpReactAgent = {
     }
 };
 
-console.log("WP ReAct Agent loaded. Use `wpReactAgent.run('Your query here')` to start."); 
+console.log("WP ReAct Agent loaded. Use `wpReactAgent.run('Your query here')` to start.");

@@ -5,14 +5,29 @@ use Felix_Arntz\AI_Services\Services\API\Enums\Content_Role;
 use Felix_Arntz\AI_Services\Services\API\Helpers;
 use Felix_Arntz\AI_Services\Services\API\Types\Content;
 use Felix_Arntz\AI_Services\Services\API\Types\Parts;
-use Felix_Arntz\AI_Services\Services\API\Types\Parts\Text_Part;
 use Felix_Arntz\AI_Services\Services\AI_Service_Exception; // Catch specific AI service errors
+
+// Note: Text_Part might not be needed if using Helpers::get_text_from_contents directly
+// use Felix_Arntz\AI_Services\Services\API\Types\Parts\Text_Part;
 
 if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
 
-define('WP_REACT_AGENT_MAX_ITERATIONS', 7); // Increased slightly
+// Default max iterations, can be overridden with filter
+define('WP_REACT_AGENT_DEFAULT_MAX_ITERATIONS', 7);
+
+// Check if debug log function exists, if not define it to avoid errors
+if (!function_exists('wp_react_agent_debug_log')) {
+    /**
+     * Debug log function (fallback if not defined in plugin.php)
+     */
+    function wp_react_agent_debug_log($message) {
+        if (defined('WP_DEBUG') && WP_DEBUG === true) {
+            error_log('WP ReAct Agent: ' . $message);
+        }
+    }
+}
 
 /**
  * Handles the AJAX request to run the ReAct agent.
@@ -20,7 +35,10 @@ define('WP_REACT_AGENT_MAX_ITERATIONS', 7); // Increased slightly
 function handle_react_agent_run() {
     check_ajax_referer( 'react_agent_run_nonce', 'nonce' );
 
-    if ( ! current_user_can( 'manage_options' ) ) { // Basic capability check
+    // Allow filtering the required capability for using the ReAct agent
+    $required_capability = apply_filters( 'wp_react_agent_required_capability', 'manage_options' );
+
+    if ( ! current_user_can( $required_capability ) ) { // Configurable capability check
         wp_send_json_error( array('message' => 'Permission denied.'), 403 );
         return;
     }
@@ -43,15 +61,14 @@ function handle_react_agent_run() {
     }
 
     try {
-        // Get the default configured service, or specify one like 'openai', 'google' if needed
         $ai_service = ai_services()->get_available_service();
         $result = run_react_loop( $ai_service, $query );
-        wp_send_json_success( $result );
+        wp_send_json_success( $result ); // Contains 'answer' and 'transcript'
     } catch ( AI_Service_Exception $e ) {
         error_log("WP ReAct Agent - AI Service Error: " . $e->getMessage());
         wp_send_json_error( array(
             'message' => 'An error occurred with the AI service: ' . $e->getMessage(),
-            'code' => $e->getCode() // Include API error code if available
+            'code' => $e->getCode()
         ), 500 );
     } catch ( \Exception $e ) {
         error_log("WP ReAct Agent - General Error: " . $e->getMessage());
@@ -62,62 +79,74 @@ function handle_react_agent_run() {
 /**
  * The core ReAct loop using AI Services plugin.
  *
- * @param object $ai_service AI Service instance (either AI_Service_Client or AI_Service_Decorator).
+ * @param object $ai_service AI Service instance (\Felix_Arntz\AI_Services\Services\AI_Service_Client or decorator).
  * @param string $query The initial user query.
  * @return array Result containing final answer and transcript.
  */
 function run_react_loop( $ai_service, string $query ): array {
-    // Create a text content from the user's query
+    // Create initial user content using the helper
     $user_content = create_text_content($query, Content_Role::USER);
-    
-    $context = [
-        $user_content
-    ];
+
+    $context = [ $user_content ]; // Start context with user query as Content object
     $transcript = "User: " . $query . "\n\n";
+    
+    // Allow filtering the maximum number of iterations
+    $max_iterations = apply_filters('wp_react_agent_max_iterations', WP_REACT_AGENT_DEFAULT_MAX_ITERATIONS);
     $iterations = 0;
 
     // Build the system prompt text first
     $system_prompt_text = build_system_prompt();
 
-    // Get a model capable of text generation (like gpt-4o-mini)
+    // Get a model capable of text generation
     $model_args = array(
-        'feature'      => 'wp-react-agent-loop',
+        'feature'      => 'wp-react-agent-loop', // Identifier for usage tracking
         'capabilities' => array( AI_Capability::TEXT_GENERATION ),
-        'systemInstruction' => $system_prompt_text, // Pass system instruction here
+        'systemInstruction' => $system_prompt_text, // Pass system instruction to the model request
+        // Consider adding model preference if AI Services supports it robustly:
+        // 'model_id' => 'openai/gpt-4o-mini',
     );
-    $model = $ai_service->get_model( $model_args );
 
-    while ($iterations < WP_REACT_AGENT_MAX_ITERATIONS) {
+    try {
+        $model = $ai_service->get_model( $model_args );
+    } catch ( AI_Service_Exception $e) {
+        throw new \Exception("Could not get a suitable AI model: " . $e->getMessage());
+    } catch ( \Exception $e ) {
+         throw new \Exception("Could not get a suitable AI model (General Error): " . $e->getMessage());
+    }
+
+
+    while ($iterations < $max_iterations) {
         $iterations++;
-        
-        // The messages array now starts with the user's content
+
+        // Messages array now contains Content objects
         $messages_for_api = $context;
 
         try {
-            // Use AI Services to generate text
-            $candidates = $model->generate_text( $messages_for_api, array('temperature' => 0.0) );
-            
-            // Try to safely extract text from AI Services response
-            $llm_response_content = extract_text_from_candidates($candidates);
+            // Generate text using AI Services
+            $candidates = $model->generate_text( $messages_for_api, array('temperature' => 0.0) ); // Low temp for consistency
+
+            $llm_response_content = extract_text_from_candidates($candidates); // Use helper to extract text
 
             if (empty($llm_response_content)) {
-                throw new \Exception("LLM returned an empty response.");
+                throw new \Exception("LLM returned an empty or unparseable response.");
             }
 
             $transcript .= "LLM:\n" . $llm_response_content . "\n\n";
 
             list($thought, $action) = extract_thought_and_action($llm_response_content);
 
-            if ( empty($action) ) {
-                $final_answer = $thought ?: $llm_response_content ?: "I'm sorry, I couldn't determine the next step or final answer.";
+            if ( empty($action) ) { // If LLM provides no action, consider it finished or confused
+                $final_answer = $thought ?: $llm_response_content ?: "I have completed the thought process but couldn't determine a final action or answer.";
                  return [
                     'answer' => $final_answer,
                     'transcript' => $transcript . "Agent: (No action provided, finishing)\n" . $final_answer
                  ];
             }
 
+            // Add LLM's response (thought and action) to context as a Content object
             $context[] = create_text_content($llm_response_content, Content_Role::MODEL);
 
+            // Check for finish action
             if (str_starts_with(strtolower($action), 'finish[')) {
                 $final_answer = trim(substr($action, 7, -1));
                  return [
@@ -127,32 +156,38 @@ function run_react_loop( $ai_service, string $query ): array {
             }
 
             // Execute Feature API Action
-            $observation_result = execute_feature_api_action($action); // Same function as before
+            $observation_result = execute_feature_api_action($action);
 
             $observation = '';
             if (is_wp_error($observation_result)) {
-                $observation = "Error: " . $observation_result->get_error_message();
-                // Optionally add error code: . " (Code: " . $observation_result->get_error_code() . ")"
+                $observation = sprintf(
+                    "Error: %s (Code: %s)",
+                    $observation_result->get_error_message(),
+                    $observation_result->get_error_code() ?: 'unknown'
+                );
             } else {
-                $observation_str = wp_json_encode($observation_result); // Keep it concise for the prompt
-                if (strlen($observation_str) > 800) { // Shorter limit for prompt context
-                     $observation = substr($observation_str, 0, 800) . '... [Truncated]';
+                $observation_str = wp_json_encode($observation_result); // Encode result for context
+                if ($observation_str === false) { // JSON encode failed
+                     $observation = 'Error: Could not encode observation result to JSON.';
+                } elseif (strlen($observation_str) > 800) { // Limit length for context
+                     $observation = substr($observation_str, 0, 800) . '... [Result Truncated]';
                 } else {
-                    $observation = $observation_str;
+                     $observation = $observation_str;
                 }
             }
 
             $transcript .= "Observation: " . $observation . "\n\n";
+            // Add observation to context as a Content object from the 'user' role (as per ReAct convention)
             $context[] = create_text_content("Observation: " . $observation, Content_Role::USER);
 
-        } catch ( AI_Service_Exception $e ) { // Catch AI service specific errors
+        } catch ( AI_Service_Exception $e ) { // Catch AI service specific errors during generation
              $error_message = "Error during AI Service call: " . $e->getMessage() . " (Code: " . $e->getCode() . ")";
              error_log("WP ReAct Agent Loop - AI Service Error: " . $error_message);
              return [
-                'answer' => "An error occurred while communicating with the AI service.",
+                'answer' => "An error occurred while communicating with the AI service. Please check logs.",
                 'transcript' => $transcript . "System Error: " . $error_message
              ];
-        } catch ( \Exception $e ) { // Catch other errors (action execution, parsing, etc.)
+        } catch ( \Exception $e ) { // Catch other errors (action execution, parsing, JSON errors, etc.)
              $error_message = "Error during loop execution: " . $e->getMessage();
              error_log("WP ReAct Agent Loop - General Error: " . $error_message);
              return [
@@ -171,106 +206,69 @@ function run_react_loop( $ai_service, string $query ): array {
 
 /**
  * Safely creates Content objects in the format expected by AI Services.
+ * Checks if the necessary classes exist.
  *
- * @param string $text The text content
- * @param string $role The role (user, model, system)
- * @return Content A Content object suitable for the AI Services plugin.
+ * @param string $text The text content.
+ * @param string $role The role (e.g., Content_Role::USER, Content_Role::MODEL).
+ * @return Content|array A Content object or a basic array fallback.
  */
-function create_text_content(string $text, string $role = Content_Role::USER): Content {
-    $parts = new Parts();
-    $parts->add_text_part($text);
-    return new Content($role, $parts);
+function create_text_content(string $text, string $role = Content_Role::USER) {
+     if ( class_exists('\Felix_Arntz\AI_Services\Services\API\Types\Parts') && class_exists('\Felix_Arntz\AI_Services\Services\API\Types\Content') ) {
+        $parts = new Parts();
+        $parts->add_text_part($text); // This method should exist in Parts class
+        return new Content($role, $parts);
+     } else {
+         // Fallback if classes are missing (shouldn't happen if AI Services is active)
+         return ['role' => $role, 'parts' => [['text' => $text]]];
+     }
 }
 
 /**
  * Safely extracts text from AI Services candidates response.
+ * Uses the official Helpers if available.
  *
- * @param mixed $candidates The response from AI Services
- * @return string The extracted text content
+ * @param mixed $candidates The response from AI Services model->generate_text().
+ * @return string The extracted text content, or an empty string on failure.
  */
 function extract_text_from_candidates($candidates): string {
-    // First try using Helpers if it's the right format
-    try {
-        if (class_exists('Felix_Arntz\AI_Services\Services\API\Helpers') && 
-            method_exists('Felix_Arntz\AI_Services\Services\API\Helpers', 'get_candidate_contents')) {
+    if ( class_exists('Felix_Arntz\AI_Services\Services\API\Helpers') &&
+         method_exists('Felix_Arntz\AI_Services\Services\API\Helpers', 'get_candidate_contents') &&
+         method_exists('Felix_Arntz\AI_Services\Services\API\Helpers', 'get_text_from_contents') ) {
+        try {
             $contents = Helpers::get_candidate_contents($candidates);
             if (!empty($contents) && is_array($contents)) {
                 return Helpers::get_text_from_contents($contents);
             }
+        } catch (\Throwable $e) {
+            error_log('WP ReAct Agent - AI Services Helper extraction failed: ' . $e->getMessage());
         }
-    } catch (\Throwable $e) {
-        error_log('WP ReAct Agent - Helper extraction failed: ' . $e->getMessage());
-        // Continue to fallback methods
     }
-    
-    // Fallback methods - try different common response patterns
-    // For array of candidates
+
+    // Fallback if Helpers are unavailable or failed
     if (is_array($candidates) && !empty($candidates)) {
         $first_candidate = reset($candidates);
-        
-        // Different object structures
-        if (is_object($first_candidate)) {
-            // Try different methods we might find
-            if (method_exists($first_candidate, 'get_content')) {
-                $content = $first_candidate->get_content();
-                if ($content instanceof Content) {
-                    // Content object has its own methods
-                    if (method_exists($content, 'get_text') || method_exists($content, 'to_string')) {
-                        return method_exists($content, 'get_text') ? $content->get_text() : $content->to_string();
-                    }
-                } elseif (is_string($content)) {
-                    return $content;
-                }
+        if (is_object($first_candidate) && property_exists($first_candidate, 'content')) {
+            $content_obj = $first_candidate->content;
+            if ($content_obj instanceof Content && method_exists($content_obj, 'get_text')) {
+                return $content_obj->get_text();
+            } elseif (is_string($content_obj)) {
+                 return $content_obj;
             }
-            
-            // Try direct content property
-            if (property_exists($first_candidate, 'content')) {
-                $content = $first_candidate->content;
-                if (is_string($content)) {
-                    return $content;
-                } elseif (is_object($content) && method_exists($content, 'to_string')) {
-                    return $content->to_string();
-                }
-            }
-            
-            // Try text property
-            if (property_exists($first_candidate, 'text')) {
-                return $first_candidate->text;
-            }
-            
-            // Last resort - try json encode
-            return json_encode($first_candidate);
-        }
-        
-        // Check for array structure
-        if (is_array($first_candidate)) {
-            if (isset($first_candidate['content'])) {
-                return is_string($first_candidate['content']) ? $first_candidate['content'] : json_encode($first_candidate['content']);
-            } elseif (isset($first_candidate['text'])) {
-                return $first_candidate['text'];
-            }
-        }
-        
-        // Simple string
-        if (is_string($first_candidate)) {
+        } elseif (is_string($first_candidate)) {
             return $first_candidate;
         }
+    } elseif (is_string($candidates)) {
+         return $candidates;
     }
-    
-    // If it's directly a string
-    if (is_string($candidates)) {
-        return $candidates;
-    }
-    
-    // If everything else failed, try to serialize the object
-    return is_object($candidates) || is_array($candidates) 
-        ? json_encode($candidates) 
-        : (string)$candidates;
+
+    error_log('WP ReAct Agent - Could not extract text from AI candidates: ' . print_r($candidates, true));
+    return ''; // Return empty string if extraction fails
 }
+
 
 /**
  * Builds the dynamic system prompt including available tools (features).
- * (Identical to previous version - depends on wp-feature-api)
+ * Includes Input Schema for better LLM understanding.
  *
  * @return string The system prompt.
  */
@@ -282,18 +280,22 @@ function build_system_prompt(): string {
             $features_description .= "No features currently available.\n";
         } else {
             foreach ($features as $feature) {
+                // Ensure it's the correct object and likely executable
                 if ($feature instanceof WP_Feature && ($feature->get_callback() || $feature->has_rest_alias())) {
                      $features_description .= sprintf(
                         "- ID: %s\n  Name: %s\n  Description: %s\n",
-                        $feature->get_id(),
-                        $feature->get_name(),
-                        $feature->get_description()
+                        esc_html($feature->get_id()),
+                        esc_html($feature->get_name()),
+                        esc_html($feature->get_description())
                     );
                     $input_schema = $feature->get_input_schema();
-                    if ($input_schema) {
-                       $features_description .= "  Input Schema (JSON): " . wp_json_encode($input_schema) . "\n";
+                    // Provide the schema as JSON for the LLM
+                    if ($input_schema && is_array($input_schema)) {
+                       $schema_json = wp_json_encode($input_schema, JSON_PRETTY_PRINT);
+                       if ($schema_json === false) { $schema_json = '{}'; } // Handle potential encoding error
+                       $features_description .= "  Input Schema (JSON): " . $schema_json . "\n";
                     } else {
-                        $features_description .= "  Input Schema (JSON): {}\n"; // Indicate no specific args needed
+                        $features_description .= "  Input Schema (JSON): {}\n"; // Indicate no specific args
                     }
                 }
             }
@@ -302,33 +304,39 @@ function build_system_prompt(): string {
         $features_description .= "Feature API not available.\n";
     }
 
-    // Added more explicit instructions on argument format
+    // Updated prompt for clarity on JSON arguments
+    // TODO: dynamically replace the feature multi-shot example with relevant features based on the context of the user and previous messages.
     $prompt = <<<PROMPT
 You are an assistant running within a WordPress environment. Your goal is to help the user by using available tools (WordPress features).
 Follow the ReAct (Reasoning + Acting) process strictly:
 
-Thought: Briefly explain your reasoning and plan for the next step. Focus on one step at a time.
+Thought: Briefly explain your reasoning and plan for the *next single step*.
+Action: Choose *one* available tool (feature) to execute. Format it *exactly* as: `feature_id JSON_Arguments`.
+- `feature_id` is the ID listed for the tool (e.g., `wp/get-option`).
+- `JSON_Arguments` is a *valid JSON object* containing the arguments required by the tool's Input Schema. Use `{}` if no arguments are needed by the schema. Pay close attention to required fields in the schema.
+- Example (WP Options): `wp/get-option {"option_name": "blogname"}`
+- Example (Navigation): `wp/navigate-to {"page": "edit.php"}`
+- Example (CF7 Forms): `cf7/get-form {"form_id": 123}`
+- Example (CF7 Generate): `cf7/generate-full-form {"title": "My New Form", "description": "A simple form with name, email, subject, message fields."}`
+- If you have the final answer for the user, use the special action: `finish[Your final answer to the user.]`.
 
-Action: Choose one available tool (feature) to execute. Format it exactly as: feature_id JSON_Arguments.
+IMPORTANT FORMATTING RULES:
+- DO NOT use code blocks with backticks (```) around your actions
+- DO NOT prefix feature IDs with "tool-" - just use the exact ID as provided
+- Write actions directly on a single line without any additional formatting
+- CORRECT: wp/navigate-to {"page": "upload.php"}
+- INCORRECT: ```json
+  tool-wp/navigate-to {"page": "upload.php"}
+  ```
 
-feature_id is the ID listed for the tool.
+You will receive an Observation: with the result of your action (often in JSON format, sometimes just a success/error message). Use this observation to refine your thought process for the next step.
 
-JSON_Arguments is a valid JSON object representing the arguments required by the tool's Input Schema. Use {} if no arguments are needed.
-
-Example 1 (no args): cf7/list-forms {}
-
-Example 2 (with args): cf7/get-form {"form_id": 123}
-
-If you have the final answer for the user, use the special action: finish[Your final answer to the user.].
-
-You will receive an Observation: with the result of your action. Use this observation to refine your thought process for the next step.
-
-Keep iterating Thought -> Action -> Observation until you have the final answer for the user, then use the finish[answer] action.
-If a tool fails or doesn't provide the needed info, state that in your Thought and choose a different action or use finish. Do not make up information.
-If you need information not present in your context or available tools, ask the user for clarification using finish[Your question for the user.].
+Keep iterating Thought -> Action -> Observation until you have the final answer for the user, then use the `finish[answer]` action.
+If a tool fails (returns an error in Observation), state that in your Thought and try a different approach or ask the user for clarification using `finish[Your question for the user.]`. Do not make up information or assume success if an error occurred.
+If you need missing information, ask the user using `finish[Your question for the user.]`.
 
 {$features_description}
-Start your response always with "Thought:" followed by a newline, then "Action:" followed by a newline. Do not add any text before "Thought:".
+Start your response *always* with "Thought:" followed by a newline, then "Action:" followed by a newline. Do not add any text before "Thought:".
 PROMPT;
 
     return trim($prompt);
@@ -336,33 +344,37 @@ PROMPT;
 
 /**
  * Extracts Thought and Action from the LLM response.
- * (Identical to previous version)
+ * Handles formatting issues like code blocks with backticks and tool- prefixes.
  *
  * @param string $response_content The raw content from the LLM.
  * @return array [string $thought, string $action]
  */
 function extract_thought_and_action(string $response_content): array {
-     $thought = '';
+    $thought = '';
     $action = '';
 
-    if (preg_match('/Thought:(.*?)(?:Action:|$)/si', $response_content, $matches)) {
+    // Regex to capture thought and the rest of the string after Action:
+    if (preg_match('/Thought:(.*?)(?:\n|^)Action:(.*)/si', $response_content, $matches)) {
         $thought = trim($matches[1]);
-    }
-
-    if (preg_match('/Action:(.*)/si', $response_content, $matches)) {
-        $action = trim($matches[1]);
-    }
-
-    // Basic fallback
-    if (empty($thought) && empty($action)) {
-        $lines = explode("\n", $response_content, 3);
-        if (str_starts_with(strtolower($lines[0]), 'thought:')) {
-            $thought = trim(substr($lines[0], 8));
-            if (isset($lines[1]) && str_starts_with(strtolower($lines[1]), 'action:')) {
-                $action = trim(substr($lines[1], 7));
+        $raw_action = trim($matches[2]);
+        
+        // Clean the action from code blocks and other formatting
+        $action = clean_action_string($raw_action);
+    } else {
+        // Fallback if Action: is not on a new line or Thought is missing
+        if (preg_match('/Action:(.*)/si', $response_content, $action_match)) {
+            $raw_action = trim($action_match[1]);
+            $action = clean_action_string($raw_action);
+            
+            // Try to get thought before Action:
+            $thought_part = trim(substr($response_content, 0, strpos($response_content, 'Action:')));
+            if (str_starts_with(strtolower($thought_part), 'thought:')) {
+                $thought = trim(substr($thought_part, 8));
             }
-        } elseif (str_starts_with(strtolower($lines[0]), 'action:')) {
-             $action = trim(substr($lines[0], 7));
+        } elseif (str_starts_with(strtolower($response_content), 'thought:')) {
+            // Only thought provided, no action
+            $thought = trim(substr($response_content, 8));
+            $action = ''; // Explicitly set action to empty
         }
     }
 
@@ -370,61 +382,135 @@ function extract_thought_and_action(string $response_content): array {
 }
 
 /**
- * Executes a feature API action string.
- * (Identical to previous version - depends on wp-feature-api)
+ * Cleans the action string by removing code blocks, backticks, and tool- prefixes.
  *
- * @param string $action_string e.g., 'cf7/get-form {"form_id": 123}'
+ * @param string $raw_action The raw action string from the LLM.
+ * @return string The cleaned action string.
+ */
+function clean_action_string(string $raw_action): string {
+    // Remove code block formatting (backticks with optional language)
+    if (preg_match('/```(?:json|[a-z]*)?(.+?)```/s', $raw_action, $code_matches)) {
+        $raw_action = trim($code_matches[1]);
+    }
+    
+    // Remove any backticks that might still be present
+    $raw_action = str_replace('`', '', $raw_action);
+    
+    // Remove any "tool-" prefix that might be added by the model
+    $raw_action = preg_replace('/^tool-/', '', $raw_action);
+    
+    return trim($raw_action);
+}
+
+/**
+ * Executes a feature API action string.
+ * (Includes permission checks and dummy WP_REST_Request)
+ *
+ * @param string $action_string e.g., 'wp/get-option {"option_name": "blogname"}' or 'cf7/get-form {"form_id": 123}'
  * @return mixed|WP_Error Result of the feature execution or WP_Error on failure.
  */
 function execute_feature_api_action(string $action_string) {
+    // Clean the action string again as a safety measure
+    $action_string = clean_action_string($action_string);
+    
     $feature_id = '';
-    $args_json_str = '{}';
+    $args_json_str = '{}'; // Default to empty JSON object
 
-    if (preg_match('/^([a-z0-9\-\/]+)[\s]*(.*)$/i', trim($action_string), $matches)) {
+    // Match feature_id followed by optional whitespace and the JSON arguments
+    if (preg_match('/^([a-z0-9\-\/]+)[\s]*(\{.*\})?$/i', trim($action_string), $matches)) {
         $feature_id = trim($matches[1]);
         if (isset($matches[2]) && trim($matches[2])) {
              $args_json_str = trim($matches[2]);
-             // Basic check for JSON object structure
-             if (!str_starts_with($args_json_str, '{') || !str_ends_with($args_json_str, '}')) {
-                  return new WP_Error('invalid_json_format', 'Action arguments must be a valid JSON object string starting with { and ending with }. Received: ' . $args_json_str);
+             // Validate JSON structure more strictly
+             json_decode($args_json_str); // Attempt decode
+             if (json_last_error() !== JSON_ERROR_NONE) {
+                 return new WP_Error('invalid_json_format', 'Action arguments is not valid JSON. Received: ' . esc_html($args_json_str));
              }
+        } else {
+             $args_json_str = '{}'; // Ensure it's a valid empty JSON object if no args provided
         }
     } else if (preg_match('/^finish\[.*\]$/i', trim($action_string))) {
-        // This case is handled in the main loop, shouldn't reach here ideally
-         return new WP_Error('finish_action_misrouted', 'The "finish" action should be handled by the main loop.');
+        return new WP_Error('finish_action_misrouted', 'The "finish" action should be handled by the main loop.');
     } else {
          return new WP_Error('invalid_action_format', 'Action format is invalid. Expected: feature_id {"key": "value"} or finish[Answer]. Received: ' . esc_html($action_string));
     }
+
 
     if ( ! function_exists( 'wp_find_feature' ) ) {
         return new WP_Error('feature_api_unavailable', 'Feature API function wp_find_feature is not available.');
     }
 
-    $feature = wp_find_feature( $feature_id );
-
-    if ( ! $feature instanceof WP_Feature ) {
-        return new WP_Error('feature_not_found', sprintf('Feature "%s" not found or invalid.', esc_html($feature_id)));
+    // Enhanced feature lookup that tries multiple variations of the feature ID
+    $feature = null;
+    
+    // First try the ID exactly as provided
+    $feature = wp_find_feature($feature_id);
+    
+    // If not found, try with resource- prefix
+    if (!$feature instanceof WP_Feature && !str_starts_with($feature_id, 'resource-')) {
+        $resource_id = 'resource-' . $feature_id;
+        $feature = wp_find_feature($resource_id);
+        if ($feature instanceof WP_Feature) {
+            wp_react_agent_debug_log("Feature found with resource- prefix: $resource_id");
+        }
+    }
+    
+    // If still not found, try with tool- prefix
+    if (!$feature instanceof WP_Feature && !str_starts_with($feature_id, 'tool-')) {
+        $tool_id = 'tool-' . $feature_id;
+        $feature = wp_find_feature($tool_id);
+        if ($feature instanceof WP_Feature) {
+            wp_react_agent_debug_log("Feature found with tool- prefix: $tool_id");
+        }
     }
 
-    // Decode JSON arguments
+    if ( ! $feature instanceof WP_Feature ) {
+        // Try to get a list of available features for more helpful error message
+        $available_features = array();
+        if (function_exists('wp_get_features')) {
+            $all_features = wp_get_features();
+            foreach ($all_features as $f) {
+                if ($f instanceof WP_Feature) {
+                    $available_features[] = $f->get_id();
+                }
+            }
+        }
+        
+        $error_message = sprintf('Feature "%s" not found or invalid.', esc_html($feature_id));
+        if (!empty($available_features)) {
+            $error_message .= ' Available features: ' . implode(', ', $available_features);
+        }
+        
+        return new WP_Error('feature_not_found', $error_message, ['status' => 404]);
+    }
+
+    // Decode JSON arguments again, this time using the validated string
     $args = json_decode( $args_json_str, true );
-    if (json_last_error() !== JSON_ERROR_NONE) {
-        return new WP_Error('invalid_json_args', 'Invalid JSON arguments provided for the action: ' . json_last_error_msg() . ' | Input: ' . esc_html($args_json_str));
+    if ($args === null && json_last_error() !== JSON_ERROR_NONE) {
+        // Should not happen due to earlier check, but good safety measure
+        return new WP_Error('invalid_json_args_final', 'Failed to decode JSON arguments: ' . json_last_error_msg() . ' | Input: ' . esc_html($args_json_str));
     }
 
     // --- Permission Check ---
     $dummy_request_for_perms = new class($args) extends WP_REST_Request {
          private $dummy_params;
-         public function __construct($params) { $this->dummy_params = ['context' => $params]; parent::__construct(); }
+         public function __construct($params) { $this->dummy_params = ['context' => $params]; parent::__construct('GET', '/'); } // Method/Route mandatory
          public function get_param( $key ) { return $this->dummy_params[$key] ?? null; }
          public function get_params() { return $this->dummy_params; }
+         public function get_route() { return '/dummy-feature-route'; } // Provide a dummy route
+         public function get_method() { return 'POST'; } // Assume POST for tools, GET for resources - adjust if needed
     };
 
     $permission_callback = $feature->get_permission_callback();
     if ( is_callable( $permission_callback ) ) {
-        $permission_result = call_user_func( $permission_callback, $dummy_request_for_perms );
-        if ( is_wp_error( $permission_result ) ) { return $permission_result; }
-        if ( true !== $permission_result ) { return new WP_Error('permission_denied', sprintf('Permission denied for feature "%s".', esc_html($feature_id)), array('status' => 403)); }
+        try {
+            $permission_result = call_user_func( $permission_callback, $dummy_request_for_perms );
+            if ( is_wp_error( $permission_result ) ) { return $permission_result; }
+            if ( true !== $permission_result ) { return new WP_Error('permission_denied', sprintf('Permission denied for feature "%s".', esc_html($feature_id)), array('status' => 403)); }
+        } catch (\Throwable $e) {
+            error_log("Error in permission callback for {$feature_id}: " . $e->getMessage());
+            return new WP_Error('permission_callback_error', 'Error during permission check.', array('status' => 500));
+        }
     } else {
          return new WP_Error('permission_undefined', sprintf('Permission check not defined for feature "%s". Access denied.', esc_html($feature_id)), array('status' => 500));
     }
@@ -432,9 +518,11 @@ function execute_feature_api_action(string $action_string) {
     // --- Execute the feature ---
      $dummy_request_for_run = new class($args) extends WP_REST_Request {
          private $dummy_params;
-         public function __construct($params) { $this->dummy_params = ['context' => $params]; parent::__construct(); }
+         public function __construct($params) { $this->dummy_params = ['context' => $params]; parent::__construct('GET', '/'); } // Method/Route mandatory
          public function get_param( $key ) { return $this->dummy_params[$key] ?? null; }
          public function get_params() { return $this->dummy_params; }
+         public function get_route() { return '/dummy-feature-route'; }
+         public function get_method() { return 'POST'; } // Assume POST for tools
     };
 
     try {
@@ -444,4 +532,4 @@ function execute_feature_api_action(string $action_string) {
         error_log("Error executing feature {$feature_id}: " . $e->getMessage());
         return new WP_Error('feature_execution_error', 'Error executing feature: ' . $e->getMessage());
     }
-} 
+}
