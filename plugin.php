@@ -6,7 +6,7 @@ Version: 0.3.0
 Author: James LePage
 Author URI: https://j.cv
 Requires PHP: 8.1
-Requires Plugins: wp-feature-api, ai-services
+Requires Plugins: wp-feature-api, ai-services, contact-form-7
 License: GPL-2.0-or-later
 */
 
