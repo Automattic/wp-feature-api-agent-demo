@@ -1,0 +1,245 @@
+{
+    "$schema": "https://json-schema.org/draft-07/schema#",
+    "plugin_id": "wp-react-agent",
+    "versions": [
+      {
+        "version": "1.1.0",
+        "release_date": "2025-04-02",
+        "importance": "high",
+        "changes": [
+          {
+            "id": "wp-react-agent/core/improved_performance",
+            "type": "enhancement",
+            "title": "Improved API Performance",
+            "description": "Enhanced the performance of all WordPress API features with better caching and reduced database queries.",
+            "highlight": true,
+            "screens": [
+              "/wp-admin/upload.php",
+              "/wp-admin/edit.php"
+            ],
+            "elements": [],
+            "previous_behavior": "API calls could take longer with multiple database queries per request.",
+            "current_behavior": "API response times reduced by 40% through optimized database queries and added result caching."
+          },
+          {
+            "id": "wp-react-agent/posts/taxonomy_support",
+            "type": "feature",
+            "title": "Taxonomy Term Management",
+            "description": "Added ability to assign and manage taxonomy terms when creating or updating posts.",
+            "highlight": true,
+            "screens": [
+              "/wp-admin/post.php?post={id}&action=edit",
+              "/wp-admin/post-new.php"
+            ],
+            "elements": [
+              ".categorydiv",
+              ".tagsdiv"
+            ],
+            "previous_behavior": "Could not manage taxonomy terms through the post creation/update APIs.",
+            "current_behavior": "Can now add, remove and set taxonomy terms during post operations."
+          }
+        ]
+      },
+      {
+        "version": "1.0.0",
+        "release_date": "2025-03-15",
+        "importance": "medium",
+        "changes": [
+          {
+            "id": "wp-react-agent/media/list_media",
+            "type": "feature",
+            "title": "List Media Library Items",
+            "description": "New API feature for retrieving a list of media items from the WordPress media library with filtering options for pagination, search terms, and mime types.",
+            "highlight": true,
+            "screens": [
+              "/wp-admin/upload.php"
+            ],
+            "elements": [
+              ".media-library-grid",
+              ".media-library-list"
+            ],
+            "previous_behavior": null,
+            "current_behavior": "AI agents can now programmatically retrieve and filter media library items with structured responses containing metadata and file information."
+          },
+          {
+            "id": "wp-react-agent/media/get_media",
+            "type": "feature",
+            "title": "Get Media Item Details",
+            "description": "New API feature for retrieving detailed information about a specific media item, including available image sizes and metadata.",
+            "highlight": false,
+            "screens": [
+              "/wp-admin/upload.php",
+              "/wp-admin/post.php?post={id}&action=edit"
+            ],
+            "elements": [
+              ".attachment-details"
+            ],
+            "previous_behavior": null,
+            "current_behavior": "AI agents can retrieve comprehensive information about a specific media item by ID, including all available image sizes for images."
+          },
+          {
+            "id": "wp-react-agent/media/upload_media",
+            "type": "feature",
+            "title": "Upload Media to Library",
+            "description": "New API feature for uploading files to the WordPress media library using base64-encoded file data.",
+            "highlight": true,
+            "screens": [
+              "/wp-admin/media-new.php"
+            ],
+            "elements": [
+              "#plupload-upload-ui"
+            ],
+            "previous_behavior": null,
+            "current_behavior": "AI agents can now programmatically upload media files to the WordPress media library with support for additional metadata like title, caption, and alt text."
+          },
+          {
+            "id": "wp-react-agent/media/delete_media",
+            "type": "feature",
+            "title": "Delete Media Items",
+            "description": "New API feature for removing items from the WordPress media library with options for force deletion.",
+            "highlight": false,
+            "screens": [
+              "/wp-admin/upload.php"
+            ],
+            "elements": [
+              ".delete-attachment"
+            ],
+            "previous_behavior": null,
+            "current_behavior": "AI agents can programmatically delete media items, with options to bypass the trash and force delete them permanently."
+          },
+          {
+            "id": "wp-react-agent/posts/list_posts",
+            "type": "feature",
+            "title": "List WordPress Posts",
+            "description": "New API feature for retrieving and filtering WordPress posts of any post type with comprehensive filtering and sorting options.",
+            "highlight": true,
+            "screens": [
+              "/wp-admin/edit.php"
+            ],
+            "elements": [
+              ".wp-list-table.posts"
+            ],
+            "previous_behavior": null,
+            "current_behavior": "AI agents can retrieve filtered lists of posts with support for pagination, search, ordering, and post type filtering."
+          },
+          {
+            "id": "wp-react-agent/posts/get_post",
+            "type": "feature",
+            "title": "Get WordPress Post Details",
+            "description": "New API feature for retrieving comprehensive information about a specific WordPress post by ID.",
+            "highlight": false,
+            "screens": [
+              "/wp-admin/post.php?post={id}&action=edit"
+            ],
+            "elements": [
+              "#post"
+            ],
+            "previous_behavior": null,
+            "current_behavior": "AI agents can retrieve detailed post information including content, metadata, taxonomies, and featured image data."
+          },
+          {
+            "id": "wp-react-agent/posts/create_post",
+            "type": "feature",
+            "title": "Create WordPress Posts",
+            "description": "New API feature for programmatically creating new WordPress posts of any post type.",
+            "highlight": true,
+            "screens": [
+              "/wp-admin/post-new.php"
+            ],
+            "elements": [
+              "#post"
+            ],
+            "previous_behavior": null,
+            "current_behavior": "AI agents can create new posts with specified content, featured images, and metadata across any available post type."
+          },
+          {
+            "id": "wp-react-agent/posts/update_post",
+            "type": "feature",
+            "title": "Update WordPress Posts",
+            "description": "New API feature for modifying existing WordPress posts with partial updates support.",
+            "highlight": false,
+            "screens": [
+              "/wp-admin/post.php?post={id}&action=edit"
+            ],
+            "elements": [
+              "#post"
+            ],
+            "previous_behavior": null,
+            "current_behavior": "AI agents can update existing posts with support for partial updates, only modifying the specified fields while leaving others unchanged."
+          },
+          {
+            "id": "wp-react-agent/posts/delete_post",
+            "type": "feature",
+            "title": "Delete WordPress Posts",
+            "description": "New API feature for removing WordPress posts with options for bypassing the trash.",
+            "highlight": false,
+            "screens": [
+              "/wp-admin/edit.php"
+            ],
+            "elements": [
+              ".trash a"
+            ],
+            "previous_behavior": null,
+            "current_behavior": "AI agents can delete posts with options to move to trash or permanently delete, with appropriate permission checks to ensure security."
+          }
+        ]
+      },
+      {
+        "version": "0.9.0",
+        "release_date": "2025-02-10",
+        "importance": "medium",
+        "changes": [
+          {
+            "id": "wp-react-agent/core/initial_release",
+            "type": "feature",
+            "title": "Initial Plugin Framework",
+            "description": "First release of the WordPress Feature API framework for AI agents.",
+            "highlight": true,
+            "screens": [],
+            "elements": [],
+            "previous_behavior": null,
+            "current_behavior": "Basic plugin structure and WordPress integration with initial options management features."
+          },
+          {
+            "id": "wp-react-agent/options/get_option",
+            "type": "feature",
+            "title": "Get WordPress Option",
+            "description": "API feature for retrieving WordPress options from the database.",
+            "highlight": true,
+            "screens": [
+              "/wp-admin/options.php"
+            ],
+            "elements": [],
+            "previous_behavior": null,
+            "current_behavior": "AI agents can retrieve WordPress options with proper permission checks."
+          },
+          {
+            "id": "wp-react-agent/options/update_option",
+            "type": "feature",
+            "title": "Update WordPress Option",
+            "description": "API feature for updating WordPress options in the database.",
+            "highlight": true,
+            "screens": [
+              "/wp-admin/options.php"
+            ],
+            "elements": [],
+            "previous_behavior": null,
+            "current_behavior": "AI agents can update WordPress options with proper permission checks."
+          },
+          {
+            "id": "wp-react-agent/options/delete_option",
+            "type": "feature",
+            "title": "Delete WordPress Option",
+            "description": "API feature for removing WordPress options from the database.",
+            "highlight": false,
+            "screens": [
+              "/wp-admin/options.php"
+            ],
+            "elements": [],
+            "previous_behavior": null,
+            "current_behavior": "AI agents can delete WordPress options with proper permission checks."
+          }
+        ]
+      }
+    ]
+}

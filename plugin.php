@@ -58,13 +58,35 @@ function wp_react_agent_debug_log($message) {
 function wp_react_agent_load_all_features() {
     global $wp_react_agent_feature_set;
     
+    // Core dependencies for the agent itself
+    $core_deps_met = true;
+    $missing_core_deps = [];
+    if (!function_exists('ai_services')) {
+        $core_deps_met = false;
+        $missing_core_deps[] = 'AI Services';
+    }
+    if (!function_exists('wp_register_feature') || !class_exists('WP_Feature')) {
+        $core_deps_met = false;
+        $missing_core_deps[] = 'Feature API';
+    }
+    
+    if (!$core_deps_met) {
+        wp_react_agent_debug_log("WP ReAct Agent core disabled. Missing dependencies: " . implode(', ', $missing_core_deps));
+        return; // Don't load agent core or features if core deps are missing
+    }
+    
+    // Load agent-core.php only if core dependencies are met
+    static $agent_core_loaded = false;
+    if (!$agent_core_loaded) {
+        require_once WP_REACT_AGENT_PATH . 'agent-core.php';
+        $agent_core_loaded = true;
+        wp_react_agent_debug_log("Agent core loaded.");
+    }
+
+    // Now load feature sets
     foreach ($wp_react_agent_feature_set as $id => &$feature_set) {
-        // Skip if already loaded
-        if ($feature_set['loaded']) {
-            continue;
-        }
-        
-        // Check dependencies
+        // Always recheck dependencies - don't rely on 'loaded' flag for dependencies
+        // This ensures if a plugin gets deactivated, we detect it
         $dependencies_met = true;
         $missing_deps = array();
         
@@ -87,7 +109,16 @@ function wp_react_agent_load_all_features() {
         }
         
         if (!$dependencies_met) {
-            wp_react_agent_debug_log("Feature set '{$feature_set['label']}' has missing dependencies: " . implode(', ', $missing_deps));
+            // Set loaded to false if dependencies are not met (handles plugin deactivation case)
+            if ($feature_set['loaded']) {
+                wp_react_agent_debug_log("Feature set '{$feature_set['label']}' was loaded but now has missing dependencies: " . implode(', ', $missing_deps));
+                $feature_set['loaded'] = false;
+            }
+            continue;
+        }
+        
+        // Skip if already loaded
+        if ($feature_set['loaded']) {
             continue;
         }
         
@@ -101,9 +132,6 @@ function wp_react_agent_load_all_features() {
         }
     }
 }
-
-// --- Include Core Agent Logic ---
-require_once WP_REACT_AGENT_PATH . 'agent-core.php';
 
 // --- Automatically Include Feature Registrations ---
 $features_dir = WP_REACT_AGENT_PATH . 'features';

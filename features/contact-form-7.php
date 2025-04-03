@@ -1,4 +1,4 @@
- <?php
+<?php
 // File: wp-react-agent/features/contact-form-7.php
 
 use Felix_Arntz\AI_Services\Services\API\Enums\AI_Capability;
@@ -536,7 +536,30 @@ if (function_exists('wp_react_agent_register_feature_set')) {
             'wp_register_feature',             // Require Feature API
             'WPCF7_ContactForm',               // Require CF7
             'wp_find_feature',                 // Require Feature API functions
-            'WP_Feature'                       // Require Feature API classes
+            'WP_Feature',                      // Require Feature API classes
+            // Additional CF7-specific dependency checks
+            function() {
+                // Check for key CF7 functions and classes that are required for features
+                if (!class_exists('WPCF7_ContactFormTemplate')) {
+                    cf7_feature_api_debug_log('CF7 Template class not available');
+                    return false;
+                }
+                if (!function_exists('wpcf7_contact_form')) {
+                    cf7_feature_api_debug_log('CF7 core functions not available');
+                    return false;
+                }
+                
+                // Additional check to verify CF7 is fully loaded
+                // Check if constant is defined before using it
+                $is_fully_initialized = defined('WPCF7_VERSION') && WPCF7_VERSION;
+                if (!$is_fully_initialized) {
+                    cf7_feature_api_debug_log('CF7 not fully initialized');
+                    return false;
+                }
+                
+                cf7_feature_api_debug_log('All CF7 dependencies are available');
+                return true;
+            }
         )
     );
     cf7_feature_api_debug_log('Contact Form 7 Features registered with loader');

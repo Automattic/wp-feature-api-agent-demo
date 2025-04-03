@@ -1,7 +1,7 @@
 <?php
-// File: wp-react-agent/features/wordpress-options.php
+// WordPress Options API Features
 
-if ( ! defined( 'ABSPATH' ) ) {
+if (!defined('ABSPATH')) {
     exit; // Exit if accessed directly.
 }
 
@@ -18,7 +18,6 @@ function wp_options_feature_api_debug_log($message) {
  * Register WordPress Options features with the Feature API.
  */
 function wp_feature_api_wp_options_register_features() {
-    // Dependency checks are now handled by the centralized loader
     wp_options_feature_api_debug_log('Registering WordPress Options features');
     
     // --- Feature 1: Get Option (Resource) ---
@@ -46,7 +45,6 @@ function wp_feature_api_wp_options_register_features() {
             ),
             'permission_callback' => function() {
                 // Allow users with edit_posts capability (authors and above) to read options
-                // This is less restrictive than manage_options (admin only)
                 return current_user_can( 'edit_posts' );
             },
             'callback'    => function( $request ) {
@@ -214,16 +212,4 @@ if (function_exists('wp_react_agent_register_feature_set')) {
         )
     );
     wp_options_feature_api_debug_log('WordPress Options Features registered with loader');
-} else {
-    wp_options_feature_api_debug_log('Centralized loader not available, WordPress Options features will not be registered');
-}
-
-// Remove the old hooks approach
-if (has_action('init', 'wp_feature_api_wp_options_register_features')) {
-    remove_action('init', 'wp_feature_api_wp_options_register_features', 99);
-}
-
-// Remove debug message that gets printed on every inclusion
-if (isset($wp_options_features_file_loaded)) {
-    $wp_options_features_file_loaded = true;
-}
+} 

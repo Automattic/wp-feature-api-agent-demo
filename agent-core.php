@@ -10,6 +10,9 @@ use Felix_Arntz\AI_Services\Services\AI_Service_Exception; // Catch specific AI 
 // Note: Text_Part might not be needed if using Helpers::get_text_from_contents directly
 // use Felix_Arntz\AI_Services\Services\API\Types\Parts\Text_Part;
 
+// Note: WP_Feature API functions/classes are only available if the Feature API plugin is active
+// We do runtime checks before calling them, but linters might still show errors.
+
 if ( ! defined( 'ABSPATH' ) ) {
     exit;
 }
@@ -97,14 +100,47 @@ function run_react_loop( $ai_service, string $query ): array {
     // Build the system prompt text first
     $system_prompt_text = build_system_prompt();
 
+    // Select preferred model based on service provider
+    $model_preference = null;
+    if (method_exists($ai_service, 'get_service_slug')) {
+        $service_slug = $ai_service->get_service_slug();
+        
+        // Default model preferences for each provider
+        // These models should be the most capable and up to date models for each provider.
+        switch ($service_slug) {
+            case 'openai':
+                $model_preference = 'gpt-4o';
+                break;
+            case 'anthropic':
+                $model_preference = 'claude-3-7-sonnet';
+                break;
+            case 'google':
+                $model_preference = 'gemini-2.5-flash-latest';
+                break;
+            // Add more providers as needed
+        }
+        
+        // Allow filtering the model preference
+        $model_preference = apply_filters(
+            'wp_react_agent_model_preference', 
+            $model_preference, 
+            $service_slug
+        );
+        
+        wp_react_agent_debug_log("Using preferred model for $service_slug: " . ($model_preference ?: 'Default'));
+    }
+
     // Get a model capable of text generation
     $model_args = array(
         'feature'      => 'wp-react-agent-loop', // Identifier for usage tracking
         'capabilities' => array( AI_Capability::TEXT_GENERATION ),
         'systemInstruction' => $system_prompt_text, // Pass system instruction to the model request
-        // Consider adding model preference if AI Services supports it robustly:
-        // 'model_id' => 'openai/gpt-4o-mini',
     );
+    
+    // Add model preference if available
+    if ($model_preference) {
+        $model_args['model'] = $model_preference;
+    }
 
     try {
         $model = $ai_service->get_model( $model_args );
@@ -279,9 +315,33 @@ function build_system_prompt(): string {
         if (empty($features)) {
             $features_description .= "No features currently available.\n";
         } else {
+            // First check if any features fail basic dependency validation
+            $valid_features = array();
             foreach ($features as $feature) {
-                // Ensure it's the correct object and likely executable
-                if ($feature instanceof WP_Feature && ($feature->get_callback() || $feature->has_rest_alias())) {
+                // Skip features that require missing plugins
+                if (!$feature instanceof WP_Feature) {
+                    continue;
+                }
+                
+                // Use our new availability checker
+                if (function_exists('wp_react_agent_is_feature_available') && 
+                    !wp_react_agent_is_feature_available($feature->get_id())) {
+                    wp_react_agent_debug_log("Feature {" . $feature->get_id() . "} skipped - dependencies not met");
+                    continue;
+                }
+                
+                $valid_features[] = $feature;
+            }
+            
+            // Now use the filtered list
+            foreach ($valid_features as $feature) {
+                // Ensure it's the correct object type again before calling methods
+                if (!$feature instanceof WP_Feature) {
+                     continue;
+                }
+                
+                // Ensure it's likely executable
+                if ($feature->get_callback() || $feature->has_rest_alias()) {
                      $features_description .= sprintf(
                         "- ID: %s\n  Name: %s\n  Description: %s\n",
                         esc_html($feature->get_id()),
@@ -305,7 +365,33 @@ function build_system_prompt(): string {
     }
 
     // Updated prompt for clarity on JSON arguments
-    // TODO: dynamically replace the feature multi-shot example with relevant features based on the context of the user and previous messages.
+    // Dynamically pick examples based on available feature sets
+    $examples = array(
+        'wp/get-option {"option_name": "blogname"}',
+        'wp/navigate-to {"page": "edit.php"}'
+    );
+    
+    // Only include CF7 examples if CF7 features are available
+    $cf7_available = false;
+    if (function_exists('wp_find_feature')) {
+        $cf7_form_feature = wp_find_feature('cf7/list-forms');
+        $cf7_available = $cf7_form_feature instanceof WP_Feature && 
+                         function_exists('wp_react_agent_is_feature_available') && 
+                         wp_react_agent_is_feature_available('cf7/list-forms');
+    }
+    
+    if ($cf7_available) {
+        $examples[] = 'cf7/get-form {"form_id": 123}';
+        $examples[] = 'cf7/generate-full-form {"title": "My New Form", "description": "A simple form with name, email, subject, message fields."}';
+    }
+    
+    $examples_text = '';
+    foreach ($examples as $example) {
+        $examples_text .= "- Example: `$example`\n";
+    }
+    
+    // in a real system, we should have a human in the loop, where there are reviews, the ability to ask for clarification, and the ability to stop the agent.
+
     $prompt = <<<PROMPT
 You are an assistant running within a WordPress environment. Your goal is to help the user by using available tools (WordPress features).
 Follow the ReAct (Reasoning + Acting) process strictly:
@@ -314,10 +400,7 @@ Thought: Briefly explain your reasoning and plan for the *next single step*.
 Action: Choose *one* available tool (feature) to execute. Format it *exactly* as: `feature_id JSON_Arguments`.
 - `feature_id` is the ID listed for the tool (e.g., `wp/get-option`).
 - `JSON_Arguments` is a *valid JSON object* containing the arguments required by the tool's Input Schema. Use `{}` if no arguments are needed by the schema. Pay close attention to required fields in the schema.
-- Example (WP Options): `wp/get-option {"option_name": "blogname"}`
-- Example (Navigation): `wp/navigate-to {"page": "edit.php"}`
-- Example (CF7 Forms): `cf7/get-form {"form_id": 123}`
-- Example (CF7 Generate): `cf7/generate-full-form {"title": "My New Form", "description": "A simple form with name, email, subject, message fields."}`
+{$examples_text}
 - If you have the final answer for the user, use the special action: `finish[Your final answer to the user.]`.
 
 IMPORTANT FORMATTING RULES:
@@ -329,11 +412,18 @@ IMPORTANT FORMATTING RULES:
   tool-wp/navigate-to {"page": "upload.php"}
   ```
 
+IMPORTANT RULES:
+- DO NOT ask the user for clarifying information, just use the tools available to you.
+- In the beginning of your interaction, take a deep breath, and think about 1) the information you have, 2) the information you need, 3) the tools available to you, 4) the best approach to take.
+- If you are unable to address the request with the tools available, state that in your Thought and try a different approach or use a different tool.
+- Do not assume that everything is possible. In some cases, the task will be impossible to complete, given the context, enviorment, plugins, theme, or tools available. If you have attempted to complete the task and failed, this is okay.
+- Do not make up information or assume success if an error occurred.
+
 You will receive an Observation: with the result of your action (often in JSON format, sometimes just a success/error message). Use this observation to refine your thought process for the next step.
 
 Keep iterating Thought -> Action -> Observation until you have the final answer for the user, then use the `finish[answer]` action.
-If a tool fails (returns an error in Observation), state that in your Thought and try a different approach or ask the user for clarification using `finish[Your question for the user.]`. Do not make up information or assume success if an error occurred.
-If you need missing information, ask the user using `finish[Your question for the user.]`.
+If a tool fails (returns an error in Observation), state that in your Thought and try a different approach or use a different tool. Do not make up information or assume success if an error occurred.
+If you need information that isn't available through the tools, make your best attempt using the tools that are available.
 
 {$features_description}
 Start your response *always* with "Thought:" followed by a newline, then "Action:" followed by a newline. Do not add any text before "Thought:".
@@ -450,20 +540,17 @@ function execute_feature_api_action(string $action_string) {
     if (!$feature instanceof WP_Feature && !str_starts_with($feature_id, 'resource-')) {
         $resource_id = 'resource-' . $feature_id;
         $feature = wp_find_feature($resource_id);
-        if ($feature instanceof WP_Feature) {
-            wp_react_agent_debug_log("Feature found with resource- prefix: $resource_id");
-        }
+        // No need for debug log here, just check the result
     }
     
     // If still not found, try with tool- prefix
     if (!$feature instanceof WP_Feature && !str_starts_with($feature_id, 'tool-')) {
         $tool_id = 'tool-' . $feature_id;
         $feature = wp_find_feature($tool_id);
-        if ($feature instanceof WP_Feature) {
-            wp_react_agent_debug_log("Feature found with tool- prefix: $tool_id");
-        }
+        // No need for debug log here, just check the result
     }
 
+    // Check if feature was found AND is the correct type
     if ( ! $feature instanceof WP_Feature ) {
         // Try to get a list of available features for more helpful error message
         $available_features = array();
@@ -482,6 +569,23 @@ function execute_feature_api_action(string $action_string) {
         }
         
         return new WP_Error('feature_not_found', $error_message, ['status' => 404]);
+    }
+
+    // Check for dependency issues
+    $callback = $feature->get_callback();
+    if (is_array($callback) && isset($callback[0])) {
+        // If callback is an array with an object/class, check it exists
+        $class_name = is_object($callback[0]) ? get_class($callback[0]) : $callback[0];
+        if (!class_exists($class_name)) {
+            return new WP_Error(
+                'feature_dependency_missing',
+                sprintf('Feature "%s" depends on class "%s" which is not available. Required plugin may be deactivated.', 
+                    esc_html($feature_id), 
+                    esc_html($class_name)
+                ),
+                ['status' => 503]
+            );
+        }
     }
 
     // Decode JSON arguments again, this time using the validated string
@@ -532,4 +636,57 @@ function execute_feature_api_action(string $action_string) {
         error_log("Error executing feature {$feature_id}: " . $e->getMessage());
         return new WP_Error('feature_execution_error', 'Error executing feature: ' . $e->getMessage());
     }
+}
+
+/**
+ * Checks if a feature or feature set is available.
+ * Can be used to check dependencies before offering features to users.
+ *
+ * @param string $feature_id The feature ID to check (e.g., 'cf7/list-forms')
+ * @return bool True if the feature is available and all dependencies met
+ */
+function wp_react_agent_is_feature_available($feature_id) {
+    global $wp_react_agent_feature_set;
+    
+    // First check if the feature exists
+    if (!function_exists('wp_find_feature')) {
+        return false;
+    }
+    
+    $feature = wp_find_feature($feature_id);
+    if (!$feature instanceof WP_Feature) {
+        return false;
+    }
+    
+    // Find which feature set this feature belongs to
+    $feature_namespace = explode('/', $feature_id)[0];
+    
+    // Check if the feature set is loaded
+    foreach ($wp_react_agent_feature_set as $set_id => $set_info) {
+        if (strpos($set_id, $feature_namespace) === 0 && !$set_info['loaded']) {
+            wp_react_agent_debug_log("Feature {$feature_id} belongs to unloaded set {$set_id}");
+            return false;
+        }
+    }
+    
+    // Check if the feature callback is valid
+    $callback = $feature->get_callback();
+    if (!$callback || !is_callable($callback)) {
+        // Also check if it has a REST alias as an alternative execution method
+        if (!$feature->has_rest_alias()) { 
+            wp_react_agent_debug_log("Feature {$feature_id} has no valid callback or REST alias.");
+            return false;
+        }
+    }
+    
+    // Check for class dependencies if callback is array-based
+    if (is_array($callback) && isset($callback[0])) {
+        $class_name = is_object($callback[0]) ? get_class($callback[0]) : $callback[0];
+        if (!class_exists($class_name)) {
+            wp_react_agent_debug_log("Feature {$feature_id} depends on unavailable class: {$class_name}");
+            return false;
+        }
+    }
+    
+    return true;
 }
